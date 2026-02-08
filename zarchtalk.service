@@ -1,0 +1,46 @@
+# ZarchTalk Systemd Service
+# Copy to: /etc/systemd/system/zarchtalk.service
+# Then run:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable zarchtalk
+#   sudo systemctl start zarchtalk
+
+[Unit]
+Description=ZarchTalk Youth Group Reminder Service
+After=network.target
+
+[Service]
+Type=simple
+User=your_username
+Group=your_group
+WorkingDirectory=/path/to/zarchtalk
+Environment="PATH=/path/to/venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Run the scheduler
+ExecStart=/path/to/venv/bin/python /path/to/zarchtalk/scheduler.py
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# Logging
+StandardOutput=append:/var/log/zarchtalk/zarchtalk.log
+StandardError=append:/var/log/zarchtalk/zarchtalk-error.log
+
+[Install]
+WantedBy=multi-user.target
+
+# Setup steps:
+# 1. Replace placeholders with actual paths
+# 2. Create log directory: sudo mkdir -p /var/log/zarchtalk
+# 3. Set permissions: sudo chown your_username:your_group /var/log/zarchtalk
+# 4. Copy this file to /etc/systemd/system/zarchtalk.service
+# 5. Enable and start: sudo systemctl enable zarchtalk && sudo systemctl start zarchtalk
+#
+# Commands:
+#   sudo systemctl status zarchtalk    # Check status
+#   sudo systemctl stop zarchtalk      # Stop service
+#   sudo systemctl restart zarchtalk   # Restart service
+#   sudo journalctl -u zarchtalk -f    # Follow logs

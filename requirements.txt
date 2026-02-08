@@ -1,0 +1,24 @@
+# Core dependencies
+python-dotenv==1.0.0
+requests==2.31.0
+
+# Twilio
+twilio==9.0.0
+
+# Google Sheets
+gspread==6.0.0
+google-auth==2.27.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+
+# Ollama
+ollama==0.1.6
+
+# Scheduling
+schedule==1.2.0
+
+# Database
+# Using built-in sqlite3, no additional package needed
+
+# Web server for audio serving (optional, if you want to serve from Python)
+flask==3.0.0
