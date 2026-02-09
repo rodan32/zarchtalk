@@ -1,0 +1,25 @@
+# Zarchbot Webhook Service – handles incoming Twilio voice calls
+# Install: sudo cp zarchbot-webhook.service /etc/systemd/system/
+#         sudo systemctl daemon-reload && sudo systemctl enable zarchbot-webhook && sudo systemctl start zarchbot-webhook
+
+[Unit]
+Description=Zarchbot Incoming Call Webhook
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/zarchbot
+Environment="PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=/root/zarchbot/.env
+
+ExecStart=/usr/bin/python3 /root/zarchbot/webhook.py
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

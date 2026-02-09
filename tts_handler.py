@@ -11,6 +11,8 @@ from config import config
 class TTSHandler:
     def __init__(self):
         self.tts_host = config.KOKORO_TTS_HOST
+        self.voice = config.KOKORO_VOICE
+        self.speed = config.KOKORO_SPEED
         self.audio_output_dir = config.AUDIO_OUTPUT_DIR
         self.audio_base_url = config.AUDIO_BASE_URL
         
@@ -38,23 +40,26 @@ class TTSHandler:
             local_path = os.path.join(self.audio_output_dir, filename)
             public_url = f"{self.audio_base_url}/{filename}"
             
-            # Call Kokoro TTS API
-            # Adjust this based on your Kokoro container's API
+            # Call Kokoro TTS API (OpenAI-compatible /v1/audio/speech)
             response = requests.post(
-                f"{self.tts_host}/generate",
+                f"{self.tts_host}/v1/audio/speech",
                 json={
-                    "text": text,
-                    "voice": "default",  # Adjust based on available voices
-                    "speed": 1.0,
-                    "format": "mp3"
+                    "input": text,
+                    "voice": self.voice,
+                    "response_format": "mp3",
+                    "speed": self.speed,
+                    "stream": True
                 },
-                timeout=30
+                timeout=60,
+                stream=True
             )
             
             if response.status_code == 200:
-                # Save audio file
+                # Save audio file (streamed response)
                 with open(local_path, 'wb') as f:
-                    f.write(response.content)
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
                 
                 print(f"Generated TTS audio: {filename}")
                 return local_path, public_url

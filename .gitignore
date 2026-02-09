@@ -1,0 +1,14 @@
+# Secrets
+.env
+credentials.json
+*credentials*.json
+zarchbot-*-*.json
+
+# Generated/cache
+__pycache__/
+venv/
+*.pyc
+sheets_cache.json
+
+# Audio output (can be large)
+/var/www/zarchbot/audio/*.mp3
