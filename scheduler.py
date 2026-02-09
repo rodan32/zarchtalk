@@ -9,8 +9,12 @@ from config import config
 from database import db
 from sheets_reader import sheets
 from message_gen import message_gen
+from question_handler import get_next_event_intro_variations
+from phrase_sets import get_phrase_sets_for_tts
 from tts_handler import tts
 from twilio_handler import twilio_handler
+from intro_qa import run_intro_qa
+from report_unanswered import send_unanswered_report
 
 class ReminderScheduler:
     def __init__(self):
@@ -18,8 +22,41 @@ class ReminderScheduler:
         self.debug = config.DEBUG_MODE
     
     def check_and_send_reminders(self):
-        """Main function to check for events and send reminders"""
+        """Main task: find events needing reminders and send them. Intro pregen/QA are best-effort."""
         print(f"\n[{datetime.now()}] Checking for events needing reminders...")
+        
+        # Best-effort: pre-load intro TTS so callers get a ready "what's next" (failures don't block reminders)
+        try:
+            intro_texts = get_next_event_intro_variations(count=3)
+            if intro_texts:
+                tts.refresh_prepared_intros(intro_texts)
+                print(f"Refreshed {len(intro_texts)} intro variation(s)")
+                # Pre-generate all phrase prompts (any_questions, any_other_questions, goodbye, fallback) so every prompt uses cache
+                try:
+                    tts.refresh_prepared_phrases(get_phrase_sets_for_tts())
+                    print("Refreshed phrase sets (any_questions, any_other_questions, goodbye, fallback)")
+                except Exception as e:
+                    print(f"Phrase refresh skipped: {e}")
+                # Optional: Whisper transcribe + Ollama review (compare intended vs heard)
+                if getattr(config, "WHISPER_HOST", ""):
+                    try:
+                        indexed_paths = tts.get_prepared_intro_paths()  # [(index, path), ...]
+                        if indexed_paths:
+                            # Align paths with texts by index (e.g. if intro_1 missing, intro_2 path pairs with text[2])
+                            paths = [p for i, p in indexed_paths if i < len(intro_texts)]
+                            texts = [intro_texts[i] for i, p in indexed_paths if i < len(intro_texts)]
+                            if paths and len(texts) == len(paths):
+                                run_intro_qa(
+                                    paths,
+                                    texts,
+                                    config.WHISPER_HOST,
+                                    config.OLLAMA_HOST,
+                                    config.OLLAMA_MODEL,
+                                )
+                    except Exception as e:
+                        print(f"Intro QA skipped: {e}")
+        except Exception as e:
+            print(f"Intro pre-generation skipped: {e}")
         
         # Get events needing reminders
         events = sheets.get_events_needing_reminder(
@@ -150,6 +187,23 @@ class ReminderScheduler:
             time.sleep(1)
         
         print(f"Completed reminders for {event['name']}")
+
+    def _cleanup_audio(self):
+        """Remove old TTS audio files; keeps cached ack and intro files."""
+        try:
+            n = tts.cleanup_old_files(days_old=config.AUDIO_CLEANUP_DAYS)
+            if n:
+                print(f"Cleaned up {n} old audio file(s)")
+        except Exception as e:
+            print(f"Audio cleanup failed: {e}")
+
+    def _send_unanswered_report(self):
+        """Email admin a list of questions we couldn't answer (if configured)."""
+        try:
+            if send_unanswered_report():
+                print("Sent unanswered-questions report by email")
+        except Exception as e:
+            print(f"Unanswered report failed: {e}")
     
     def run_continuous(self):
         """Run the scheduler continuously"""
@@ -187,7 +241,11 @@ class ReminderScheduler:
         schedule.every(config.CHECK_INTERVAL_MINUTES).minutes.do(
             self.check_and_send_reminders
         )
-        
+        # Clean up old audio files daily (keeps ack/intro cache, removes old reminder_* etc.)
+        schedule.every().day.at("03:00").do(self._cleanup_audio)
+        # Weekly report: unanswered questions by email + SMS (Saturday 8 AM)
+        schedule.every().saturday.at("08:00").do(self._send_unanswered_report)
+
         # Run once immediately
         print("\nRunning initial check...")
         self.check_and_send_reminders()

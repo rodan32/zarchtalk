@@ -1,0 +1,25 @@
+# Zarchbot Scheduler – checks sheet, sends reminders, pre-generates intro TTS
+# Install: sudo cp zarchbot-scheduler.service /etc/systemd/system/
+#         sudo systemctl daemon-reload && sudo systemctl enable zarchbot-scheduler && sudo systemctl start zarchbot-scheduler
+
+[Unit]
+Description=Zarchbot Reminder Scheduler
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/zarchbot
+Environment="PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=/root/zarchbot/.env
+
+ExecStart=/usr/bin/python3 /root/zarchbot/scheduler.py
+
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

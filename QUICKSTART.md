@@ -60,6 +60,25 @@ Fix any failures before proceeding.
 python scheduler.py
 ```
 
+## Test voice calls
+
+1. **Webhook must be running** and reachable by Twilio at `WEBHOOK_BASE_URL` (e.g. `https://zarchbot.zarchstuff.com`).  
+   - If using systemd: `sudo systemctl status zarchbot-webhook`  
+   - Or run locally: `python webhook.py` (set `WEBHOOK_HOST=0.0.0.0` if Twilio hits this machine).
+
+2. **Twilio configuration**  
+   In Twilio Console → Phone Numbers → your number → Voice & Fax:  
+   - **A call comes in**: Webhook, `https://your-domain/webhook/voice`  
+   - HTTP POST.
+
+3. **Call the number**  
+   Dial your Twilio phone number from your phone. You should hear the next-event intro (or a cached variation), then “Do you have any questions?”, then you can speak a question or say “no” to hang up.
+
+4. **Optional: pre-generate intros**  
+   Run the scheduler once so it refreshes cached intro variations:  
+   `python -c "from scheduler import scheduler; scheduler.check_and_send_reminders()"`  
+   Then call again to hear one of the pre-generated intros.
+
 ## First Reminder Test
 
 Add a test event to your Google Sheet:
@@ -82,6 +101,18 @@ Wait for next check cycle (or set `CHECK_INTERVAL_MINUTES=1` for faster testing)
 **"TTS service not reachable"**: Verify Kokoro container is running
 
 **"Ollama error"**: Ensure Ollama is running with model loaded
+
+## Applio (optional): more natural voice
+
+On the TTS host (e.g. 192.168.0.20), only two ports are used: **8880** (Kokoro) and **6006** (Applio). Set `KOKORO_TTS_HOST=http://192.168.0.20:8880` and optionally run Kokoro output through **Applio** (voice conversion at port 6006). In `.env`:
+
+```ini
+APPLIO_HOST=http://192.168.0.20:6006
+```
+
+Install the client: `pip install gradio_client`. The app will use Kokoro first, then send the MP3 to Applio if the host is set. If Applio is down or the API doesn’t match, it falls back to Kokoro-only.
+
+**Warmer, friendlier sound:** If the voice feels a bit cold, in Applio's inference tab try a slightly warmer voice model, or add a touch of **Reverb** in the post-processing effects—it softens the tone without changing the words.
 
 ## Next Steps
 

@@ -1,4 +1,4 @@
-# Zarchbot Webhook Service – handles incoming Twilio voice calls
+# Zarchbot Webhook Service – handles incoming Twilio voice calls (Gunicorn, 4 workers)
 # Install: sudo cp zarchbot-webhook.service /etc/systemd/system/
 #         sudo systemctl daemon-reload && sudo systemctl enable zarchbot-webhook && sudo systemctl start zarchbot-webhook
 
@@ -13,7 +13,7 @@ WorkingDirectory=/root/zarchbot
 Environment="PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
 EnvironmentFile=/root/zarchbot/.env
 
-ExecStart=/usr/bin/python3 /root/zarchbot/webhook.py
+ExecStart=/usr/local/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 60 webhook:app
 
 Restart=on-failure
 RestartSec=5

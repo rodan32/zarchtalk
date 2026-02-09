@@ -22,3 +22,7 @@ schedule==1.2.0
 
 # Web server for audio serving (optional, if you want to serve from Python)
 flask==3.0.0
+gunicorn>=21.0.0
+
+# Optional: Applio voice conversion (pip install gradio_client when using APPLIO_HOST)
+gradio_client>=1.0.0

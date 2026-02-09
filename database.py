@@ -35,6 +35,16 @@ class Database:
             )
         ''')
         
+        # Unanswered questions (voice/SMS) for periodic report to admin
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS unanswered_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transcript TEXT NOT NULL,
+                source TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         # Reminders sent log
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS reminders_sent (
@@ -163,6 +173,45 @@ class Database:
         conn.close()
         
         return history
+
+    def log_unanswered_question(self, transcript: str, source: str = "voice"):
+        """Record a question we couldn't answer (fallback response was used)."""
+        if not transcript or not str(transcript).strip():
+            return
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO unanswered_questions (transcript, source) VALUES (?, ?)",
+                (str(transcript).strip()[:500], source),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_pending_unanswered_questions(self):
+        """Return list of (id, transcript, source, created_at) for unreported questions."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, transcript, source, created_at FROM unanswered_questions ORDER BY created_at"
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def delete_unanswered_questions(self, ids=None):
+        """Delete reported questions. If ids is None, delete all."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if ids:
+            placeholders = ",".join("?" * len(ids))
+            cursor.execute(f"DELETE FROM unanswered_questions WHERE id IN ({placeholders})", ids)
+        else:
+            cursor.execute("DELETE FROM unanswered_questions")
+        conn.commit()
+        conn.close()
+
 
 # Create database instance
 db = Database()

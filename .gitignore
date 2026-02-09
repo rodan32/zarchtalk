@@ -9,6 +9,9 @@ __pycache__/
 venv/
 *.pyc
 sheets_cache.json
+.webhook_roundrobin.json
+*.db
+zarchtalk.db
 
 # Audio output (can be large)
 /var/www/zarchbot/audio/*.mp3
