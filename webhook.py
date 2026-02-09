@@ -105,8 +105,8 @@ def _is_repeat_request(transcript: str) -> bool:
     """True if the user is asking to repeat the last thing (intro or previous answer)."""
     if not transcript or not transcript.strip():
         return False
-    s = transcript.strip().lower()
-    if s in ("repeat", "again", "what", "what was that", "say that again", "can you repeat", "could you repeat"):
+    s = transcript.strip().lower().rstrip("?.!")
+    if s in ("repeat", "again", "what", "what was that", "say that again", "can you repeat", "could you repeat", "can you repeat that", "could you repeat that"):
         return True
     if "repeat" in s and len(s) < 60:
         return True
@@ -380,11 +380,13 @@ def _voice_gather_process_impl():
     if not reply:
         reply = get_fallback_response()
     if reply in FALLBACK_RESPONSES:
-        try:
-            from database import db
-            db.log_unanswered_question(transcript, "voice")
-        except Exception:
-            pass
+        # Don't log repeat-like requests as unanswered (they're handled by replay, not as a real question)
+        if not _is_repeat_request(transcript):
+            try:
+                from database import db
+                db.log_unanswered_question(transcript, "voice")
+            except Exception:
+                pass
     reply_played = _play_prepared_or_tts(resp, "fallback", reply) if reply in FALLBACK_RESPONSES else _tts_play(resp, reply)
     if not reply_played and reply:
         try:

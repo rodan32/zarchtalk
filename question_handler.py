@@ -192,6 +192,33 @@ def _get_next_event_text() -> str:
         return "Sorry, we couldn't look up events right now. Check the calendar for what's coming up."
 
 
+def _get_next_event_date_time_short() -> str:
+    """Return just the date and time of the next event, e.g. 'Wednesday, February 11 at 5:15.' for repeating after the intro."""
+    try:
+        from datetime import date, timedelta
+        from sheets_reader import sheets
+        upcoming = sheets.get_upcoming_events(days_ahead=90)
+        if not upcoming:
+            return _naturalize_for_voice("No upcoming events on the calendar.")
+        e = upcoming[0]
+        if _is_unnamed_event(e):
+            return _calendar_empty_response("for the next bit—someone forgot to name it")
+        event_date = e["date"]
+        today = date.today()
+        days_since_monday = today.weekday()
+        week_start = today - timedelta(days=days_since_monday)
+        week_end = week_start + timedelta(days=6)
+        if week_start <= event_date <= week_end:
+            date_str = event_date.strftime("%A")
+        else:
+            date_str = event_date.strftime("%A, %B %d")
+        time_str = e.get("time") or "TBD"
+        raw = f"It's on {date_str} at {time_str}."
+        return _naturalize_for_voice(raw)
+    except Exception:
+        return "Sorry, we couldn't look up the calendar right now."
+
+
 def _get_next_n_events_text(n: int) -> str:
     try:
         from sheets_reader import sheets
@@ -382,6 +409,10 @@ def handle_question(transcript: str) -> str | None:
             print(f"[zarchbot] No LLM answer (intent={intent_data!r}), using keyword fallbacks")
     except Exception:
         pass
+
+    # "What's the date of that activity?" / "When is it?" — repeat the next event's date/time
+    if any(phrase in q for phrase in ("date of that", "date of the activity", "when is it", "when is that", "what day is it", "what day is that", "what's the date", "when's that")):
+        return _get_next_event_date_time_short()
 
     if "next" in q and any(x in q for x in ["3", "three", "few", "several"]):
         n = 3
