@@ -18,6 +18,10 @@ ExecStart=/usr/bin/python3 /root/zarchbot/scheduler.py
 Restart=on-failure
 RestartSec=10
 
+# Leave headroom for other services: cap pre-warm/reminders at 4 cores, lower priority
+CPUQuota=400%
+Nice=5
+
 StandardOutput=journal
 StandardError=journal
 

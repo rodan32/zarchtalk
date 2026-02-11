@@ -28,50 +28,104 @@ class TTSHandler:
         self.enhanced_style = getattr(config, "ENHANCED_TTS_STYLE", "moderate") or "moderate"
         self.applio_host = (config.APPLIO_HOST or "").strip().rstrip("/")
         os.makedirs(self.audio_output_dir, exist_ok=True)
-        self._ack_filename = "ack_sure_let_me_check"
+        self._ack_prefix = "ack"
         self._intro_prefix = "intro"
         self._intro_count = 3  # intro_0, intro_1, intro_2
         self._phrase_prefix = "phrase"
 
-    def get_prepared_ack(self, phrase: str) -> tuple[str | None, str | None]:
+    def refresh_prepared_acks(self, phrases: list[str]) -> None:
         """
-        Return (local_path, public_url) for pre-generated ack audio so we can play it
-        without TTS delay. Generates once and reuses. Same voice as the rest of the flow.
+        Pre-generate TTS for multiple short ack phrases and save as ack_0.*, ack_1.*, etc.
+        Call weekly from scheduler; webhook uses get_prepared_ack() to play a random one.
         """
-        for ext in ("mp3", "wav"):
-            path = os.path.join(self.audio_output_dir, f"{self._ack_filename}.{ext}")
-            if os.path.isfile(path):
-                url = f"{self.audio_base_url}/{self._ack_filename}.{ext}"
-                return path, url
-        # Generate and cache
-        path, url = self.text_to_speech(phrase, recipient_phone="ack")
-        if not path or not url:
-            return None, None
-        ext = os.path.splitext(path)[1].lstrip(".")
-        ack_path = os.path.join(self.audio_output_dir, f"{self._ack_filename}.{ext}")
-        try:
-            import shutil
-            shutil.copy2(path, ack_path)
-            ack_url = f"{self.audio_base_url}/{self._ack_filename}.{ext}"
+        import shutil
+        for i, phrase in enumerate(phrases):
+            if not (phrase and phrase.strip()):
+                continue
+            path, _ = self.text_to_speech(phrase.strip(), recipient_phone="ack")
+            if not path or not os.path.isfile(path):
+                continue
+            ext = os.path.splitext(path)[1].lstrip(".")
+            dest = os.path.join(self.audio_output_dir, f"{self._ack_prefix}_{i}.{ext}")
             try:
-                os.remove(path)
-            except OSError:
-                pass
-            return ack_path, ack_url
-        except Exception:
-            return path, url
+                shutil.copy2(path, dest)
+                if path != dest:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                for other in ("mp3", "wav"):
+                    if other != ext:
+                        other_path = os.path.join(self.audio_output_dir, f"{self._ack_prefix}_{i}.{other}")
+                        if os.path.isfile(other_path):
+                            try:
+                                os.remove(other_path)
+                            except OSError:
+                                pass
+            except Exception as e:
+                print(f"Failed to cache ack {i}: {e}")
 
-    def refresh_prepared_intros(self, intro_texts: list[str]) -> None:
+    def get_prepared_ack(self, phrase: str | None = None) -> tuple[str | None, str | None]:
+        """
+        Return (local_path, public_url) for a pre-generated ack. If phrase is None (default),
+        returns a random cached ack from refresh_prepared_acks(). If phrase is given, returns
+        that specific cached ack if present, or generates and returns it once (backward compat).
+        """
+        # Collect all cached ack_0, ack_1, ...
+        candidates = []
+        for f in os.listdir(self.audio_output_dir):
+            if not f.startswith(self._ack_prefix + "_"):
+                continue
+            base, ext = os.path.splitext(f)
+            if ext.lstrip(".").lower() not in ("mp3", "wav"):
+                continue
+            try:
+                idx = int(base.split("_", 2)[1])
+            except (IndexError, ValueError):
+                continue
+            path = os.path.join(self.audio_output_dir, f)
+            if os.path.isfile(path):
+                url = f"{self.audio_base_url}/{base}{ext}"
+                candidates.append((path, url))
+        if candidates:
+            return random.choice(candidates)
+        # No cache: if phrase given, generate once
+        if phrase and phrase.strip():
+            path, url = self.text_to_speech(phrase.strip(), recipient_phone="ack")
+            if path and url and os.path.isfile(path):
+                import shutil
+                ext = os.path.splitext(path)[1].lstrip(".")
+                ack_path = os.path.join(self.audio_output_dir, f"{self._ack_prefix}_0.{ext}")
+                try:
+                    shutil.copy2(path, ack_path)
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    return ack_path, f"{self.audio_base_url}/{self._ack_prefix}_0.{ext}"
+                except Exception:
+                    return path, url
+        return None, None
+
+    def refresh_prepared_intros(self, intro_texts: list[str], max_retries: int = 2) -> None:
         """
         Pre-generate TTS for 2–3 next-event intro variations and save as intro_0.*, intro_1.*, etc.
         Call this when the sheet/calendar is refreshed so callers get a ready intro without TTS delay.
+        Retries each index up to max_retries times if TTS returns no file (e.g. transient Applio/Kokoro errors).
         """
         import shutil
         for i, text in enumerate(intro_texts):
             if i >= self._intro_count or not (text and text.strip()):
                 continue
-            path, _ = self.text_to_speech(text, recipient_phone="intro")
+            path = None
+            for attempt in range(max_retries + 1):
+                path, _ = self.text_to_speech(text, recipient_phone="intro")
+                if path and os.path.isfile(path):
+                    break
+                if attempt < max_retries:
+                    print(f"Intro {i} TTS attempt {attempt + 1} failed, retrying...")
             if not path or not os.path.isfile(path):
+                print(f"Failed to generate intro {i} after {max_retries + 1} attempt(s)")
                 continue
             ext = os.path.splitext(path)[1].lstrip(".")
             dest = os.path.join(self.audio_output_dir, f"{self._intro_prefix}_{i}.{ext}")
@@ -93,6 +147,69 @@ class TTSHandler:
                                 pass
             except Exception as e:
                 print(f"Failed to cache intro {i}: {e}")
+
+    def generate_intro_to_path(self, text: str, output_base_path: str, max_retries: int = 2) -> str | None:
+        """
+        Generate intro TTS and write to output_base_path + extension (e.g. .../intro_0_regen1.mp3).
+        Returns the path to the written file, or None on failure. Used to produce candidate
+        versions for QA so we can keep the best of original + 2 regens.
+        """
+        import shutil
+        if not (text and text.strip()):
+            return None
+        path = None
+        for attempt in range(max_retries + 1):
+            path, _ = self.text_to_speech(text.strip(), recipient_phone="intro")
+            if path and os.path.isfile(path):
+                break
+            if attempt < max_retries:
+                print(f"Intro TTS attempt {attempt + 1} failed, retrying...")
+        if not path or not os.path.isfile(path):
+            return None
+        ext = os.path.splitext(path)[1].lstrip(".")
+        base = output_base_path.rstrip(".mp3").rstrip(".wav").rstrip(".")
+        dest = base + "." + ext
+        try:
+            shutil.copy2(path, dest)
+            if path != dest:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            return dest if os.path.isfile(dest) else None
+        except Exception:
+            return None
+
+    def refresh_prepared_intro_at_index(self, index: int, text: str, max_retries: int = 2) -> bool:
+        """
+        Re-generate and cache a single intro at the given index (0-based). Used when QA
+        suggests re-recording for naturalness. Returns True if cached successfully.
+        """
+        import shutil
+        if index < 0 or index >= self._intro_count or not (text and text.strip()):
+            return False
+        out_base = os.path.join(self.audio_output_dir, f"{self._intro_prefix}_{index}")
+        path = self.generate_intro_to_path(text.strip(), out_base, max_retries)
+        if not path or not os.path.isfile(path):
+            print(f"Failed to re-generate intro {index} after {max_retries + 1} attempt(s)")
+            return False
+        ext = os.path.splitext(path)[1].lstrip(".")
+        dest = os.path.join(self.audio_output_dir, f"{self._intro_prefix}_{index}.{ext}")
+        try:
+            if path != dest:
+                shutil.copy2(path, dest)
+            for other in ("mp3", "wav"):
+                if other != ext:
+                    other_path = os.path.join(self.audio_output_dir, f"{self._intro_prefix}_{index}.{other}")
+                    if os.path.isfile(other_path):
+                        try:
+                            os.remove(other_path)
+                        except OSError:
+                            pass
+            return True
+        except Exception as e:
+            print(f"Failed to cache intro {index}: {e}")
+            return False
 
     def get_prepared_intro(self) -> tuple[str | None, str | None]:
         """
@@ -400,7 +517,7 @@ class TTSHandler:
         try:
             now = datetime.now()
             # Keep these; they are overwritten by scheduler/webhook and should not be removed by age
-            keep_prefixes = (self._ack_filename, self._intro_prefix + "_", self._phrase_prefix + "_")
+            keep_prefixes = (self._ack_prefix + "_", self._intro_prefix + "_", self._phrase_prefix + "_")
             for filename in os.listdir(self.audio_output_dir):
                 filepath = os.path.join(self.audio_output_dir, filename)
                 if not os.path.isfile(filepath):

@@ -9,6 +9,7 @@ __pycache__/
 venv/
 *.pyc
 sheets_cache.json
+scheduler_state.json
 .webhook_roundrobin.json
 *.db
 zarchtalk.db

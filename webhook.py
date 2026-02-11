@@ -20,7 +20,7 @@ from question_handler import (
     FALLBACK_RESPONSES,
 )
 from phrase_sets import (
-    ACK_PHRASE,
+    ACK_PHRASES,
     GOODBYE_PHRASE,
     ANY_QUESTIONS_PHRASES,
     ANY_OTHER_QUESTIONS_PHRASES,
@@ -328,13 +328,13 @@ def _voice_gather_impl():
         # Ask question -> ack and redirect to process
         try:
             from tts_handler import tts
-            ack_path, ack_url = tts.get_prepared_ack(ACK_PHRASE)
+            ack_path, ack_url = tts.get_prepared_ack()
             if ack_url:
                 resp.play(ack_url)
             else:
-                _tts_play(resp, ACK_PHRASE)
+                _tts_play(resp, random.choice(ACK_PHRASES))
         except Exception:
-            _tts_play(resp, ACK_PHRASE)
+            _tts_play(resp, ACK_PHRASES[0])
         try:
             process_url = f"{base_url}/webhook/voice/gather/process?t={urllib.parse.quote(transcript)}"
         except Exception:
@@ -455,30 +455,8 @@ def health():
     return {"status": "ok"}, 200
 
 
-# Pre-generate ack and phrase sets in background so first call uses af_heart natural for all prompts
-def _prewarm_ack():
-    try:
-        from tts_handler import tts
-        tts.get_prepared_ack(ACK_PHRASE)
-    except Exception:
-        pass
-
-
-def _prewarm_phrases():
-    """Pre-generate all phrase sets (any_questions, any_other_questions, fallback, goodbye) so every prompt uses cache."""
-    try:
-        from tts_handler import tts
-        tts.refresh_prepared_phrases(get_phrase_sets_for_tts())
-    except Exception:
-        pass
-
-
-import threading
-_thread = threading.Thread(target=_prewarm_ack, daemon=True)
-_thread.start()
-_thread2 = threading.Thread(target=_prewarm_phrases, daemon=True)
-_thread2.start()
-
+# Prewarm (ack + phrases) runs in the scheduler service so webhook workers don't all run TTS at startup.
+# First call after deploy may use on-demand TTS until scheduler has run once.
 
 if __name__ == "__main__":
     port = int(os.getenv("WEBHOOK_PORT", "5000"))

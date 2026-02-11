@@ -156,12 +156,92 @@ def _format_combined_event(e: dict) -> str | None:
         rest = name
     else:
         rest = rest[0].lower() + rest[1:] if len(rest) > 1 else rest.lower()
-    return f"The next event is a combined activity, {rest}, on {date_str} at {time_str}."
+        return f"The next event is a combined activity, {rest}, on {date_str} at {time_str}."
+
+
+def _format_next_event_date_natural(event_date, time_str: str, reference_date=None):
+    """
+    Human-friendly date/time for the next event: "today at 3:00", "tomorrow at 5:15",
+    "this afternoon at 2:00", "Wednesday at 6:00", "Wednesday, February 11 at 6:00".
+    reference_date defaults to today; used so crossing midnight triggers intro refresh.
+    """
+    from datetime import date, timedelta
+    ref = reference_date or date.today()
+    time_str = (time_str or "TBD").strip()
+    delta = (event_date - ref).days
+    if delta == 0:
+        day_part = "today"
+    elif delta == 1:
+        day_part = "tomorrow"
+    elif delta < 0:
+        day_part = event_date.strftime("%A, %B %d")
+    else:
+        # This week: just day name
+        days_since_monday = ref.weekday()
+        week_start = ref - timedelta(days=days_since_monday)
+        week_end = week_start + timedelta(days=6)
+        if week_start <= event_date <= week_end:
+            day_part = event_date.strftime("%A")
+        else:
+            day_part = event_date.strftime("%A, %B %d")
+    # Optional: "this afternoon" / "this evening" for today/tomorrow
+    try:
+        t = time_str.upper().replace(".", "")
+        if "PM" in t or "AM" in t:
+            hour_str = t.split(":")[0]
+            hour = int("".join(c for c in hour_str if c.isdigit()) or 0)
+            if "PM" in t and hour != 12:
+                hour += 12
+            if "AM" in t and hour == 12:
+                hour = 0
+            if delta == 0 and hour >= 12 and hour < 17:
+                return f"this afternoon at {time_str}"
+            if delta == 0 and hour >= 17:
+                return f"this evening at {time_str}"
+            if delta == 0 and hour < 12:
+                return f"this morning at {time_str}"
+            if delta == 1 and hour >= 12 and hour < 17:
+                return f"tomorrow afternoon at {time_str}"
+            if delta == 1 and hour >= 17:
+                return f"tomorrow evening at {time_str}"
+            if delta == 1 and hour < 12:
+                return f"tomorrow morning at {time_str}"
+        else:
+            pass  # fall through to day_part + at time_str
+    except Exception:
+        pass
+    return f"{day_part} at {time_str}"
+
+
+def get_next_event_intro_signature(reference_date=None):
+    """
+    Return a signature tuple for the current "next event" so the scheduler can detect
+    when to refresh intros: (name, date_iso, time, location, reference_date_iso).
+    Crossing into a new day (reference_date) counts as change so "today"/"tomorrow" refresh.
+    Returns None if no upcoming event.
+    """
+    try:
+        from datetime import date
+        from sheets_reader import sheets
+        ref = reference_date or date.today()
+        upcoming = sheets.get_upcoming_events(days_ahead=90)
+        if not upcoming:
+            return None
+        e = upcoming[0]
+        return (
+            (e.get("name") or "").strip(),
+            e["date"].isoformat(),
+            (e.get("time") or "").strip(),
+            (e.get("location") or "").strip(),
+            ref.isoformat(),
+        )
+    except Exception:
+        return None
 
 
 def _get_next_event_text() -> str:
     try:
-        from datetime import date, timedelta
+        from datetime import date
         from sheets_reader import sheets
         upcoming = sheets.get_upcoming_events(days_ahead=90)
         if not upcoming:
@@ -172,21 +252,14 @@ def _get_next_event_text() -> str:
         combined_text = _format_combined_event(e)
         if combined_text:
             return _naturalize_for_voice(combined_text)
-        # Format date: if this week, just day name; otherwise day name + date
         event_date = e["date"]
-        today = date.today()
-        # Calculate start of this week (Monday)
-        days_since_monday = today.weekday()
-        week_start = today - timedelta(days=days_since_monday)
-        week_end = week_start + timedelta(days=6)
-        if week_start <= event_date <= week_end:
-            # This week: just day name
-            date_str = event_date.strftime("%A")
-        else:
-            # Next week or later: day name + date
-            date_str = event_date.strftime("%A, %B %d")
         time_str = e.get("time") or "TBD"
-        raw = f"The next event is {e['name']} on {date_str} at {time_str}."
+        location = (e.get("location") or "").strip()
+        when = _format_next_event_date_natural(event_date, time_str)
+        if location:
+            raw = f"The next event is {e['name']}, {when}, at {location}."
+        else:
+            raw = f"The next event is {e['name']}, {when}."
         return _naturalize_for_voice(raw)
     except Exception:
         return "Sorry, we couldn't look up events right now. Check the calendar for what's coming up."

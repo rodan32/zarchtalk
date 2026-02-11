@@ -1,60 +1,160 @@
 """
 Main scheduler for ZarchTalk
-Periodically checks for events needing reminders and sends them
+Periodically checks for events needing reminders and sends them.
+Ack and phrase sets refresh weekly; intros refresh only when next event or date threshold changes.
 """
+import json
+import os
 import time
 import schedule
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from config import config
 from database import db
 from sheets_reader import sheets
 from message_gen import message_gen
-from question_handler import get_next_event_intro_variations
-from phrase_sets import get_phrase_sets_for_tts
+from question_handler import get_next_event_intro_variations, get_next_event_intro_signature
+from phrase_sets import get_phrase_sets_for_tts, get_ack_phrases_for_tts
 from tts_handler import tts
 from twilio_handler import twilio_handler
-from intro_qa import run_intro_qa
+from intro_qa import run_intro_qa, run_single_intro_qa
 from report_unanswered import send_unanswered_report
 
 class ReminderScheduler:
     def __init__(self):
         self.last_check = {}  # Track last check time for each event
         self.debug = config.DEBUG_MODE
-    
+        self._state_path = getattr(config, "SCHEDULER_STATE_PATH", "./scheduler_state.json")
+        # Don't send outbound reminders until initial pre-warm (ack + phrase) is done; we always accept incoming traffic
+        self._prewarm_done = False
+
+    def _load_intro_signature(self):
+        """Load last intro signature from state file for change detection."""
+        try:
+            if os.path.isfile(self._state_path):
+                with open(self._state_path) as f:
+                    data = json.load(f)
+                sig = data.get("last_intro_signature")
+                if sig and isinstance(sig, list) and len(sig) == 5:
+                    return tuple(sig)
+        except Exception:
+            pass
+        return None
+
+    def _save_intro_signature(self, sig):
+        """Persist intro signature so we only refresh when event or reference date changes."""
+        try:
+            data = {}
+            if os.path.isfile(self._state_path):
+                with open(self._state_path) as f:
+                    data = json.load(f)
+            data["last_intro_signature"] = list(sig)
+            with open(self._state_path, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"Could not save scheduler state: {e}")
+
+    def _run_intro_qa_and_regen(self, intro_texts: list):
+        """Run QA on prepared intros; for those with feedback, regen up to 2x and keep best of 3."""
+        try:
+            indexed_paths = tts.get_prepared_intro_paths()
+            if not indexed_paths:
+                return
+            paths = [p for i, p in indexed_paths if i < len(intro_texts)]
+            texts = [intro_texts[i] for i, p in indexed_paths if i < len(intro_texts)]
+            if not paths or len(texts) != len(paths):
+                return
+            indices_to_regenerate, ratings_by_index = run_intro_qa(
+                paths, texts,
+                config.WHISPER_HOST, config.OLLAMA_HOST, config.OLLAMA_MODEL,
+            )
+            audio_dir = tts.audio_output_dir
+            path_by_index = {i: p for i, p in indexed_paths if i < len(intro_texts)}
+            for idx in indices_to_regenerate:
+                if idx >= len(intro_texts):
+                    continue
+                text = intro_texts[idx]
+                rating_orig = ratings_by_index.get(idx, 5)
+                orig_path = path_by_index.get(idx)
+                if not orig_path or not os.path.isfile(orig_path):
+                    continue
+                candidates = [(rating_orig, 0, orig_path)]
+                p1 = tts.generate_intro_to_path(text, os.path.join(audio_dir, f"intro_{idx}_regen1"))
+                if p1 and os.path.isfile(p1):
+                    _, r1 = run_single_intro_qa(p1, text, config.WHISPER_HOST, config.OLLAMA_HOST, config.OLLAMA_MODEL)
+                    candidates.append((r1, 1, p1))
+                p2 = tts.generate_intro_to_path(text, os.path.join(audio_dir, f"intro_{idx}_regen2"))
+                if p2 and os.path.isfile(p2):
+                    _, r2 = run_single_intro_qa(p2, text, config.WHISPER_HOST, config.OLLAMA_HOST, config.OLLAMA_MODEL)
+                    candidates.append((r2, 2, p2))
+                candidates.sort(key=lambda x: (x[0], x[1]))
+                best_rating, best_id, best_path = candidates[0]
+                if best_id != 0:
+                    import shutil
+                    ext = os.path.splitext(best_path)[1].lstrip(".")
+                    final = os.path.join(audio_dir, f"intro_{idx}.{ext}")
+                    shutil.copy2(best_path, final)
+                    for other in ("mp3", "wav"):
+                        if other != ext:
+                            op = os.path.join(audio_dir, f"intro_{idx}.{other}")
+                            if os.path.isfile(op):
+                                try:
+                                    os.remove(op)
+                                except OSError:
+                                    pass
+                    print(f"Intro {idx}: kept regen{best_id} (rating {best_rating})")
+                else:
+                    print(f"Intro {idx}: kept original (rating {best_rating})")
+                for base in (f"intro_{idx}_regen1", f"intro_{idx}_regen2"):
+                    for ext in ("mp3", "wav"):
+                        to_remove = os.path.join(audio_dir, f"{base}.{ext}")
+                        if os.path.isfile(to_remove):
+                            try:
+                                os.remove(to_remove)
+                            except OSError:
+                                pass
+        except Exception as e:
+            print(f"Intro QA/regen failed: {e}")
+
+    def _refresh_ack_and_phrase_sets(self):
+        """Low-priority weekly refresh: ack phrases and phrase sets (any_questions, goodbye, fallback)."""
+        try:
+            tts.refresh_prepared_acks(get_ack_phrases_for_tts())
+            print("Refreshed ack phrases (weekly)")
+        except Exception as e:
+            print(f"Ack refresh skipped: {e}")
+        try:
+            tts.refresh_prepared_phrases(get_phrase_sets_for_tts())
+            print("Refreshed phrase sets (weekly)")
+        except Exception as e:
+            print(f"Phrase refresh skipped: {e}")
+
     def check_and_send_reminders(self):
-        """Main task: find events needing reminders and send them. Intro pregen/QA are best-effort."""
+        """Main task: find events needing reminders. Intro pregen only when next event or date threshold changed."""
         print(f"\n[{datetime.now()}] Checking for events needing reminders...")
         
-        # Best-effort: pre-load intro TTS so callers get a ready "what's next" (failures don't block reminders)
+        # Intro prewarm only when upcoming event or "today"/"tomorrow" threshold changed.
+        # Run in background so we don't block the main loop for 30+ min (TTS + QA + regen x3).
         try:
-            intro_texts = get_next_event_intro_variations(count=3)
-            if intro_texts:
-                tts.refresh_prepared_intros(intro_texts)
-                print(f"Refreshed {len(intro_texts)} intro variation(s)")
-                # Pre-generate all phrase prompts (any_questions, any_other_questions, goodbye, fallback) so every prompt uses cache
-                try:
-                    tts.refresh_prepared_phrases(get_phrase_sets_for_tts())
-                    print("Refreshed phrase sets (any_questions, any_other_questions, goodbye, fallback)")
-                except Exception as e:
-                    print(f"Phrase refresh skipped: {e}")
-                # Optional: Whisper transcribe + Ollama review (compare intended vs heard)
-                if getattr(config, "WHISPER_HOST", ""):
-                    try:
-                        indexed_paths = tts.get_prepared_intro_paths()  # [(index, path), ...]
-                        if indexed_paths:
-                            # Align paths with texts by index (e.g. if intro_1 missing, intro_2 path pairs with text[2])
-                            paths = [p for i, p in indexed_paths if i < len(intro_texts)]
-                            texts = [intro_texts[i] for i, p in indexed_paths if i < len(intro_texts)]
-                            if paths and len(texts) == len(paths):
-                                run_intro_qa(
-                                    paths,
-                                    texts,
-                                    config.WHISPER_HOST,
-                                    config.OLLAMA_HOST,
-                                    config.OLLAMA_MODEL,
-                                )
-                    except Exception as e:
-                        print(f"Intro QA skipped: {e}")
+            ref = date.today()
+            current_sig = get_next_event_intro_signature(reference_date=ref)
+            last_sig = self._load_intro_signature()
+            if current_sig is not None and current_sig != last_sig:
+                intro_texts = get_next_event_intro_variations(count=3)
+                if intro_texts:
+                    def _do_intro_refresh_and_qa():
+                        try:
+                            print("Intro refresh + QA started (background)...")
+                            tts.refresh_prepared_intros(intro_texts)
+                            self._save_intro_signature(current_sig)
+                            print(f"Refreshed {len(intro_texts)} intro variation(s) (event or date threshold changed)")
+                            if getattr(config, "WHISPER_HOST", ""):
+                                self._run_intro_qa_and_regen(intro_texts)
+                            print("Intro refresh + QA finished (background).")
+                        except Exception as e:
+                            print(f"Intro refresh + QA failed: {e}")
+                    import threading
+                    threading.Thread(target=_do_intro_refresh_and_qa, daemon=True).start()
+                    print("Intro refresh + QA running in background (main loop continues).")
         except Exception as e:
             print(f"Intro pre-generation skipped: {e}")
         
@@ -65,6 +165,10 @@ class ReminderScheduler:
         
         if not events:
             print("No events need reminders at this time.")
+            return
+        
+        if not self._prewarm_done:
+            print(f"Found {len(events)} event(s) needing reminders; skipping outbound send until pre-warm complete (incoming traffic is always accepted).")
             return
         
         print(f"Found {len(events)} event(s) needing reminders")
@@ -245,12 +349,25 @@ class ReminderScheduler:
         schedule.every().day.at("03:00").do(self._cleanup_audio)
         # Weekly report: unanswered questions by email + SMS (Saturday 8 AM)
         schedule.every().saturday.at("08:00").do(self._send_unanswered_report)
+        # Weekly low-priority: ack phrases and phrase sets (Sunday 2 AM)
+        schedule.every().sunday.at("02:00").do(self._refresh_ack_and_phrase_sets)
 
-        # Run once immediately
+        # Run once immediately (reminders + intro refresh if event changed)
         print("\nRunning initial check...")
         self.check_and_send_reminders()
+        # Populate ack/phrase cache in background so we don't peg CPU at startup (then weekly)
+        def _startup_ack_phrase():
+            try:
+                self._refresh_ack_and_phrase_sets()
+                self._prewarm_done = True
+                print("Startup ack/phrase refresh finished. Pre-warm complete; scheduler may now send reminders.")
+            except Exception as e:
+                print(f"Initial ack/phrase refresh skipped: {e}")
+                self._prewarm_done = True  # Allow sends anyway so we don't block outbound forever on failure
+        import threading
+        threading.Thread(target=_startup_ack_phrase, daemon=True).start()
         
-        # Then run on schedule
+        # Then run on schedule (main loop is just sleep + run_pending; CPU use is during job runs)
         print(f"\nScheduler running. Press Ctrl+C to stop.")
         
         try:

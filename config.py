@@ -51,6 +51,9 @@ class Config:
     CHECK_INTERVAL_MINUTES = int(os.getenv('CHECK_INTERVAL_MINUTES', 60))
     REMINDER_LEAD_TIME_HOURS = int(os.getenv('REMINDER_LEAD_TIME_HOURS', 24))
     AUDIO_CLEANUP_DAYS = int(os.getenv('AUDIO_CLEANUP_DAYS', '7'))  # Delete audio files older than this
+    SCHEDULER_STATE_PATH = os.getenv('SCHEDULER_STATE_PATH', './scheduler_state.json')  # Intro signature + optional weekly run
+    # At go-live: set BLOCK_UNTIL_WARM=1 so scheduler finishes intro + ack/phrase pre-warm before entering main loop (30–40 min)
+    BLOCK_UNTIL_WARM = os.getenv('BLOCK_UNTIL_WARM', 'false').lower() in ('1', 'true', 'yes')
     
     # Webhook (for Twilio action URLs)
     WEBHOOK_BASE_URL = os.getenv('WEBHOOK_BASE_URL', 'https://zarchbot.zarchstuff.com')

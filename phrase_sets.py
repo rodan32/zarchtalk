@@ -4,8 +4,21 @@ Used by webhook and scheduler so pre-generated audio is populated and used every
 """
 from question_handler import FALLBACK_RESPONSES
 
-ACK_PHRASE = "Sure, let me check."
+# Short ack phrases played after user speaks (one chosen at random when serving a call)
+ACK_PHRASES = (
+    "Sure, let me check.",
+    "One sec.",
+    "Let me look.",
+    "Hang on.",
+    "One moment.",
+)
+ACK_PHRASE = ACK_PHRASES[0]  # fallback if no cached ack
 GOODBYE_PHRASE = "Thanks for calling, goodbye."
+
+
+def get_ack_phrases_for_tts():
+    """Return list of ack phrases for tts.refresh_prepared_acks()."""
+    return list(ACK_PHRASES)
 
 ANY_QUESTIONS_PHRASES = (
     "Do you have any questions?",
