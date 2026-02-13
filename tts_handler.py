@@ -31,6 +31,8 @@ class TTSHandler:
         self._ack_prefix = "ack"
         self._intro_prefix = "intro"
         self._intro_count = 3  # intro_0, intro_1, intro_2
+        self._during_event_prefix = "during_event"
+        self._during_event_count = 2  # during_event_0, during_event_1
         self._phrase_prefix = "phrase"
 
     def refresh_prepared_acks(self, phrases: list[str]) -> None:
@@ -249,6 +251,62 @@ class TTSHandler:
                     result.append((i, path))
                     break
         return result
+
+    def refresh_prepared_during_event(self, texts: list[str], max_retries: int = 2) -> None:
+        """
+        Pre-generate TTS for "we're at X tonight; next activity is Y" during-event intros.
+        Saves as during_event_0.*, during_event_1.*. Call when an event is in progress.
+        """
+        import shutil
+        for i, text in enumerate(texts):
+            if i >= self._during_event_count or not (text and text.strip()):
+                continue
+            path = None
+            for attempt in range(max_retries + 1):
+                path, _ = self.text_to_speech(text.strip(), recipient_phone="during_event")
+                if path and os.path.isfile(path):
+                    break
+                if attempt < max_retries:
+                    print(f"During-event {i} TTS attempt {attempt + 1} failed, retrying...")
+            if not path or not os.path.isfile(path):
+                print(f"Failed to generate during-event {i} after {max_retries + 1} attempt(s)")
+                continue
+            ext = os.path.splitext(path)[1].lstrip(".")
+            dest = os.path.join(self.audio_output_dir, f"{self._during_event_prefix}_{i}.{ext}")
+            try:
+                shutil.copy2(path, dest)
+                if path != dest:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                for other in ("mp3", "wav"):
+                    if other != ext:
+                        other_path = os.path.join(self.audio_output_dir, f"{self._during_event_prefix}_{i}.{other}")
+                        if os.path.isfile(other_path):
+                            try:
+                                os.remove(other_path)
+                            except OSError:
+                                pass
+            except Exception as e:
+                print(f"Failed to cache during_event {i}: {e}")
+
+    def get_prepared_during_event(self) -> tuple[str | None, str | None]:
+        """
+        Return (path, url) for a random pre-generated during-event intro, or (None, None).
+        Use when an event is in progress so callers hear "We're at the church tonight! Our next activity is..."
+        """
+        candidates = []
+        for i in range(self._during_event_count):
+            for ext in ("mp3", "wav"):
+                path = os.path.join(self.audio_output_dir, f"{self._during_event_prefix}_{i}.{ext}")
+                if os.path.isfile(path):
+                    url = f"{self.audio_base_url}/{self._during_event_prefix}_{i}.{ext}"
+                    candidates.append((path, url))
+                    break
+        if not candidates:
+            return None, None
+        return random.choice(candidates)
 
     def refresh_prepared_phrases(self, phrases_dict: dict[str, list[str]]) -> None:
         """
@@ -517,7 +575,7 @@ class TTSHandler:
         try:
             now = datetime.now()
             # Keep these; they are overwritten by scheduler/webhook and should not be removed by age
-            keep_prefixes = (self._ack_prefix + "_", self._intro_prefix + "_", self._phrase_prefix + "_")
+            keep_prefixes = (self._ack_prefix + "_", self._intro_prefix + "_", self._during_event_prefix + "_", self._phrase_prefix + "_")
             for filename in os.listdir(self.audio_output_dir):
                 filepath = os.path.join(self.audio_output_dir, filename)
                 if not os.path.isfile(filepath):

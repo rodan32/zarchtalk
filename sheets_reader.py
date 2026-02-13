@@ -234,6 +234,25 @@ class SheetsReader:
         to_remind.sort(key=lambda x: x['datetime'])
         return to_remind
 
+    def get_current_event(self, duration_hours=3):
+        """
+        Return the event that is currently in progress (started, not yet ended).
+        Assumes an event is "in progress" for duration_hours after its start.
+        Returns None if no event is in progress. For Deacons-only use for now.
+        """
+        events = self._get_all_events()
+        now = datetime.now()
+        in_progress = []
+        for e in events:
+            start = e['datetime']
+            end = start + timedelta(hours=duration_hours)
+            if start <= now <= end:
+                in_progress.append(e)
+        if not in_progress:
+            return None
+        in_progress.sort(key=lambda x: x['datetime'], reverse=True)
+        return in_progress[0]
+
 
 # Create sheets reader instance
 sheets = SheetsReader()

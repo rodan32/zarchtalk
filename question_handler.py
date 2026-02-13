@@ -561,3 +561,116 @@ def get_next_event_intro_variations(count: int = 3) -> list[str]:
         rest = core_lo if "quick heads-up" in greeting else core_cap
         variations.append(f"{greeting}{rest}")
     return variations
+
+
+def get_current_event():
+    """Return the event currently in progress (started, within duration), or None. Deacons-focused for now."""
+    try:
+        from config import config
+        from sheets_reader import sheets
+        duration = getattr(config, "CURRENT_EVENT_DURATION_HOURS", 3)
+        return sheets.get_current_event(duration_hours=duration)
+    except Exception:
+        return None
+
+
+def _get_during_event_intro_text(current_event, next_event_after) -> str:
+    """Build a brief during-event line for TTS (keep it short for callers in a hurry)."""
+    from datetime import date
+    location = (current_event.get("location") or "").strip() or "the church"
+    event_date = current_event["date"]
+    ref = date.today()
+    delta = (event_date - ref).days
+    if delta == 0:
+        when_word = "today"
+    elif delta == 1:
+        when_word = "tomorrow"
+    else:
+        when_word = event_date.strftime("%A")
+    if not next_event_after:
+        return _naturalize_for_voice(f"We're at {location} {when_word}.")
+    name = (next_event_after.get("name") or "").strip()
+    if _is_unnamed_event(next_event_after):
+        name = "the next activity"
+    raw = f"We're at {location} {when_word}. Next up: {name}."
+    return _naturalize_for_voice(raw)
+
+
+def _get_event_to_prewarm_during_for():
+    """
+    Return (current_or_upcoming_event, event_after) for during-event message pre-warm.
+    Either we're in an event now, or the next upcoming event starts within PREWARM_HOURS_BEFORE.
+    Returns (None, None) if neither applies.
+    """
+    try:
+        from datetime import datetime, timedelta
+        from config import config
+        from sheets_reader import sheets
+        prewarm_hours = getattr(config, "DURING_EVENT_PREWARM_HOURS_BEFORE", 1) or 0
+        current = get_current_event()
+        if current:
+            upcoming = sheets.get_upcoming_events(days_ahead=90)
+            current_start = current["datetime"]
+            next_after = None
+            for e in upcoming:
+                if e["datetime"] > current_start:
+                    next_after = e
+                    break
+            return current, next_after
+        if prewarm_hours <= 0:
+            return None, None
+        upcoming = sheets.get_upcoming_events(days_ahead=90)
+        if not upcoming:
+            return None, None
+        now = datetime.now()
+        window_end = now + timedelta(hours=prewarm_hours)
+        next_event = upcoming[0]
+        if next_event["datetime"] > window_end:
+            return None, None
+        event_after = upcoming[1] if len(upcoming) > 1 else None
+        return next_event, event_after
+    except Exception:
+        return None, None
+
+
+def get_during_event_intro_text() -> str:
+    """
+    Return a single "we're at X tonight; next activity is Y" line for on-the-fly TTS.
+    Empty string if no event in progress and not within pre-warm window. Use when prepared during_event audio isn't ready yet.
+    """
+    event, next_after = _get_event_to_prewarm_during_for()
+    if not event:
+        return ""
+    try:
+        return _get_during_event_intro_text(event, next_after) or ""
+    except Exception:
+        return ""
+
+
+def get_during_event_intro_variations(count: int = 2) -> list[str]:
+    """
+    Return up to `count` variations of the "we're at X tonight; next activity is Y" intro.
+    Used when an event is in progress or when the next event starts within PREWARM_HOURS_BEFORE (so it's ready when the event begins).
+    """
+    text = get_during_event_intro_text()
+    if not text or not text.strip():
+        return []
+    return [text] * count if count > 0 else []
+
+
+def get_during_event_intro_signature(reference_date=None):
+    """
+    Signature for scheduler: (event_id, next_event_id, ref_iso) or None.
+    When this changes, refresh during-event pre-warm. Includes both "in progress" and "starts within PREWARM_HOURS_BEFORE" cases.
+    """
+    try:
+        from datetime import date
+        ref = reference_date or date.today()
+        event, next_after = _get_event_to_prewarm_during_for()
+        if not event:
+            return None
+        cur_id = f"{event.get('name','')}_{event['date'].isoformat()}_{event.get('time','')}"
+        nxt_id = f"{next_after.get('name','')}_{next_after['date'].isoformat()}_{next_after.get('time','')}" if next_after else ""
+        return (cur_id, nxt_id, ref.isoformat())
+    except Exception:
+        return None

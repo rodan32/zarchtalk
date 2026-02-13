@@ -12,7 +12,12 @@ from config import config
 from database import db
 from sheets_reader import sheets
 from message_gen import message_gen
-from question_handler import get_next_event_intro_variations, get_next_event_intro_signature
+from question_handler import (
+    get_next_event_intro_variations,
+    get_next_event_intro_signature,
+    get_during_event_intro_variations,
+    get_during_event_intro_signature,
+)
 from phrase_sets import get_phrase_sets_for_tts, get_ack_phrases_for_tts
 from tts_handler import tts
 from twilio_handler import twilio_handler
@@ -48,6 +53,32 @@ class ReminderScheduler:
                 with open(self._state_path) as f:
                     data = json.load(f)
             data["last_intro_signature"] = list(sig)
+            with open(self._state_path, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"Could not save scheduler state: {e}")
+
+    def _load_during_event_signature(self):
+        """Load last during-event signature for change detection."""
+        try:
+            if os.path.isfile(self._state_path):
+                with open(self._state_path) as f:
+                    data = json.load(f)
+                sig = data.get("last_during_event_signature")
+                if sig is not None and isinstance(sig, list) and len(sig) == 3:
+                    return tuple(sig)
+        except Exception:
+            pass
+        return None
+
+    def _save_during_event_signature(self, sig):
+        """Persist during-event signature."""
+        try:
+            data = {}
+            if os.path.isfile(self._state_path):
+                with open(self._state_path) as f:
+                    data = json.load(f)
+            data["last_during_event_signature"] = list(sig) if sig else None
             with open(self._state_path, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
@@ -157,6 +188,28 @@ class ReminderScheduler:
                     print("Intro refresh + QA running in background (main loop continues).")
         except Exception as e:
             print(f"Intro pre-generation skipped: {e}")
+
+        # During-event prewarm: "We're at the church tonight! Our next activity is..." when an event is in progress
+        try:
+            ref = date.today()
+            current_during_sig = get_during_event_intro_signature(reference_date=ref)
+            last_during_sig = self._load_during_event_signature()
+            if current_during_sig is not None and current_during_sig != last_during_sig:
+                during_texts = get_during_event_intro_variations(count=2)
+                if during_texts:
+                    def _do_during_event_refresh():
+                        try:
+                            tts.refresh_prepared_during_event(during_texts)
+                            self._save_during_event_signature(current_during_sig)
+                            print(f"Refreshed {len(during_texts)} during-event intro(s)")
+                        except Exception as e:
+                            print(f"During-event refresh failed: {e}")
+                    import threading
+                    threading.Thread(target=_do_during_event_refresh, daemon=True).start()
+            elif current_during_sig is None and last_during_sig is not None:
+                self._save_during_event_signature(None)
+        except Exception as e:
+            print(f"During-event pre-generation skipped: {e}")
         
         # Get events needing reminders
         events = sheets.get_events_needing_reminder(

@@ -52,11 +52,16 @@ class Config:
     REMINDER_LEAD_TIME_HOURS = int(os.getenv('REMINDER_LEAD_TIME_HOURS', 24))
     AUDIO_CLEANUP_DAYS = int(os.getenv('AUDIO_CLEANUP_DAYS', '7'))  # Delete audio files older than this
     SCHEDULER_STATE_PATH = os.getenv('SCHEDULER_STATE_PATH', './scheduler_state.json')  # Intro signature + optional weekly run
-    # At go-live: set BLOCK_UNTIL_WARM=1 so scheduler finishes intro + ack/phrase pre-warm before entering main loop (30–40 min)
-    BLOCK_UNTIL_WARM = os.getenv('BLOCK_UNTIL_WARM', 'false').lower() in ('1', 'true', 'yes')
+    # Event considered "in progress" for this many hours after start (for "we're at the church tonight" message)
+    CURRENT_EVENT_DURATION_HOURS = float(os.getenv('CURRENT_EVENT_DURATION_HOURS', '3'))
+    # Pre-warm during-event message this many hours before start so it's ready when the event begins
+    DURING_EVENT_PREWARM_HOURS_BEFORE = float(os.getenv('DURING_EVENT_PREWARM_HOURS_BEFORE', '1'))
     
     # Webhook (for Twilio action URLs)
     WEBHOOK_BASE_URL = os.getenv('WEBHOOK_BASE_URL', 'https://zarchbot.zarchstuff.com')
+    # Optional: pause (seconds, 1–3; Twilio uses integer) before first audio so the phone's audio path is ready
+    _lead_in = float(os.getenv('WEBHOOK_LEAD_IN_PAUSE_SECONDS', '0'))
+    WEBHOOK_LEAD_IN_PAUSE_SECONDS = min(3, max(0, int(round(_lead_in)))) if _lead_in > 0 else 0
     APP_CREATOR = os.getenv('APP_CREATOR', "Brother Cochran—Zach, not Mickey. He built this thing in his spare time. Yes, this is what he does for fun. If it breaks or says something weird, you know exactly who to blame.")
 
     # Unanswered-questions report (weekly Saturday: email + SMS to admin)

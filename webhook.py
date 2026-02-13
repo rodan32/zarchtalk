@@ -16,6 +16,8 @@ from twilio.twiml.messaging_response import MessagingResponse
 from question_handler import (
     handle_question as _handle_question,
     get_next_event_text as _get_next_event_text,
+    get_current_event as _get_current_event,
+    get_during_event_intro_text as _get_during_event_intro_text,
     get_fallback_response,
     FALLBACK_RESPONSES,
 )
@@ -193,23 +195,38 @@ def voice_incoming():
     base_url = config.WEBHOOK_BASE_URL.rstrip("/")
 
     resp = VoiceResponse()
+    # Optional short pause so the phone's audio path is ready (avoids first words being cut off)
+    lead_in = getattr(config, "WEBHOOK_LEAD_IN_PAUSE_SECONDS", 0) or 0
+    if lead_in > 0:
+        resp.pause(length=lead_in)
     intro_played = False
     intro_text = ""
     try:
         from tts_handler import tts
-        intro_idx = _next_roundrobin("intro", 3)
-        _, intro_url = tts.get_prepared_intro_at_index(intro_idx)
-        if intro_url:
-            resp.play(intro_url)
-            intro_played = True
-        else:
-            _, intro_url = tts.get_prepared_intro()
+        # If an event is in progress, prefer "We're at the church tonight! Our next activity is..."
+        if _get_current_event():
+            _, during_url = tts.get_prepared_during_event()
+            if during_url:
+                resp.play(during_url)
+                intro_played = True
+            else:
+                during_text = _get_during_event_intro_text()
+                if during_text:
+                    intro_played = _tts_play(resp, during_text)
+        if not intro_played:
+            intro_idx = _next_roundrobin("intro", 3)
+            _, intro_url = tts.get_prepared_intro_at_index(intro_idx)
             if intro_url:
                 resp.play(intro_url)
                 intro_played = True
             else:
-                intro_text = _get_next_event_text()
-                intro_played = _tts_play(resp, intro_text)
+                _, intro_url = tts.get_prepared_intro()
+                if intro_url:
+                    resp.play(intro_url)
+                    intro_played = True
+                else:
+                    intro_text = _get_next_event_text()
+                    intro_played = _tts_play(resp, intro_text)
     except Exception:
         try:
             from tts_handler import tts as _tts
